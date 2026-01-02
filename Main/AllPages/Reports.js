@@ -1,5 +1,9 @@
 // Reports.js - Enhanced Version
 import React, { useState, useEffect, useCallback } from 'react';
+import * as MediaLibrary from 'expo-media-library';
+
+
+
 
 import {
   StyleSheet,
@@ -20,7 +24,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BarChart } from 'react-native-chart-kit';
@@ -43,7 +47,7 @@ const { width: screenWidth } = Dimensions.get('window');
 
 //  const API_URL = "http://164.52.223.12:3000/reports/ledOutstanding";
 
- const API_URL = "http://localhost:3000/reports/ledOutstanding";
+const API_URL = "http://localhost:3000/reports/ledOutstanding";
 
 
 // const API_URL = "https://api.shraddhainfinitesolutions.com/reports/ledOutstanding";
@@ -146,6 +150,8 @@ export default function Reports() {
       setLoading(true);
       setError(null);
 
+      // --- TEMPORARILY COMMENTED OUT API CALL ---
+      /*
       // Get token from AsyncStorage
       const token = await AsyncStorage.getItem('token');
 
@@ -194,8 +200,118 @@ export default function Reports() {
         setFilteredData([]);
         return [];
       }
+      */
+      // --- END OF COMMENTED API CALL ---
+
+      // --- HARDCODED SAMPLE DATA FOR MOBILE TESTING ---
+      const sampleData = [
+        {
+          id: '1',
+          ledgerName: 'ABC Corporation Ltd',
+          closingAmount: '1250000',
+          date: '2024-01-15',
+          mobileNo: '9876543210',
+          email: 'accounts@abccorp.com'
+        },
+        {
+          id: '2',
+          ledgerName: 'XYZ Industries Pvt Ltd',
+          closingAmount: '875000',
+          date: '2024-01-15',
+          mobileNo: '9876543211',
+          email: 'finance@xyzind.com'
+        },
+        {
+          id: '3',
+          ledgerName: 'Global Trading Co',
+          closingAmount: '1560000',
+          date: '2024-01-15',
+          mobileNo: '9876543212',
+          email: 'billing@globaltrading.com'
+        },
+        {
+          id: '4',
+          ledgerName: 'Premium Suppliers',
+          closingAmount: '625000',
+          date: '2024-01-15',
+          mobileNo: '9876543213',
+          email: 'accounts@premiumsuppliers.in'
+        },
+        {
+          id: '5',
+          ledgerName: 'Metro Manufacturers',
+          closingAmount: '2340000',
+          date: '2024-01-15',
+          mobileNo: '9876543214',
+          email: 'finance@metro.com'
+        },
+        {
+          id: '6',
+          ledgerName: 'Tech Solutions Inc',
+          closingAmount: '1890000',
+          date: '2024-01-15',
+          mobileNo: '9876543215',
+          email: 'ar@techsolutions.com'
+        },
+        {
+          id: '7',
+          ledgerName: 'Urban Retailers',
+          closingAmount: '745000',
+          date: '2024-01-15',
+          mobileNo: '9876543216',
+          email: 'accounts@urbanretail.com'
+        },
+        {
+          id: '8',
+          ledgerName: 'Service Providers LLP',
+          closingAmount: '925000',
+          date: '2024-01-15',
+          mobileNo: '9876543217',
+          email: 'finance@serviceproviders.com'
+        },
+        {
+          id: '9',
+          ledgerName: 'Export Import Co',
+          closingAmount: '3120000',
+          date: '2024-01-15',
+          mobileNo: '9876543218',
+          email: ''
+        },
+        {
+          id: '10',
+          ledgerName: 'Local Distributors',
+          closingAmount: '580000',
+          date: '2024-01-15',
+          mobileNo: '',
+          email: 'accounts@localdist.com'
+        },
+        {
+          id: '11',
+          ledgerName: 'Heavy Machinery Ltd',
+          closingAmount: '1895000',
+          date: '2024-01-15',
+          mobileNo: '9876543220',
+          email: 'billing@heavymachinery.co'
+        },
+        {
+          id: '12',
+          ledgerName: 'Construction Materials',
+          closingAmount: '2450000',
+          date: '2024-01-15',
+          mobileNo: '9876543221',
+          email: 'finance@constmaterial.com'
+        }
+      ];
+
+      // Simulate network delay for realistic testing
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      setOriginalData(sampleData);
+      setFilteredData(sampleData);
+      return sampleData;
+
     } catch (error) {
-      console.error('API Fetch Error:', error);
+      console.error('Data Loading Error:', error);
       setError(error.message || 'Failed to fetch data');
       Alert.alert('Error', `Failed to load data: ${error.message || 'Unknown error'}`);
       return [];
@@ -263,19 +379,99 @@ export default function Reports() {
         link.download = fileName;
         link.click();
         Alert.alert('Success', 'CSV file downloaded!');
+      } else if (Platform.OS === 'android') {
+        // For Android - Use Storage Access Framework (SAF)
+
+        try {
+          // Check if SAF is available (Android 5.0+)
+          const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+
+          if (permissions.granted) {
+            // Get the directory URI chosen by the user
+            const directoryUri = permissions.directoryUri;
+
+            // Create file in the chosen directory (this handles unique filenames automatically)
+            const newFileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+              directoryUri,
+              fileName,
+              'text/csv'
+            );
+
+            // Write data to the new file
+            await FileSystem.writeAsStringAsync(newFileUri, csvContent, {
+              encoding: 'utf8'
+            });
+
+            Alert.alert(
+              '✅ File Saved',
+              `CSV file saved successfully!`,
+              [
+                { text: 'OK' }
+              ]
+            );
+          } else {
+            // Permission denied or cancelled
+            setIsExporting(false);
+            return;
+          }
+
+        } catch (safError) {
+          console.error('SAF Error:', safError);
+          // Fallback: Share the file if SAF fails
+
+          // Create temporary file
+          const tempFileUri = `${FileSystem.documentDirectory}${fileName}`;
+          await FileSystem.writeAsStringAsync(tempFileUri, csvContent, {
+            encoding: 'utf8'
+          });
+
+          if (await Sharing.isAvailableAsync()) {
+            await Sharing.shareAsync(tempFileUri, {
+              mimeType: 'text/csv',
+              dialogTitle: 'Share CSV File'
+            });
+          } else {
+            Alert.alert('Error', 'Could not save or share file.');
+          }
+        }
       } else {
-        // Mobile (Android & iOS) - standardized approach via Sharing
-        const fileUri = FileSystem.documentDirectory + fileName;
+        // For iOS - Save to Files app
+        const fileUri = `${FileSystem.documentDirectory}${fileName}`;
 
         await FileSystem.writeAsStringAsync(fileUri, csvContent, {
-          encoding: FileSystem.EncodingType.UTF8
+          encoding: 'utf8'
         });
 
-        await Sharing.shareAsync(fileUri, {
-          mimeType: 'text/csv',
-          dialogTitle: 'Download Ledger Report',
-          UTI: 'public.comma-separated-values-text'
-        });
+        // For iOS, we use share dialog with "Save to Files" option
+        Alert.alert(
+          '✅ Report Ready',
+          `Your CSV file is ready. Please use "Save to Files" option to save it to your device.`,
+          [
+            {
+              text: 'Save to Device',
+              onPress: async () => {
+                try {
+                  await Sharing.shareAsync(fileUri, {
+                    mimeType: 'text/csv',
+                    dialogTitle: 'Save to Files',
+                    UTI: 'public.comma-separated-values-text'
+                  });
+                } catch (shareError) {
+                  console.log('Share error:', shareError);
+                  Alert.alert(
+                    'File Saved',
+                    `File saved to app storage:\n${fileName}`,
+                    [{ text: 'OK' }]
+                  );
+                }
+              }
+            },
+            {
+              text: 'Cancel',
+              style: 'cancel'
+            }
+          ]
+        );
       }
 
     } catch (error) {
