@@ -21,6 +21,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   Linking,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
@@ -64,20 +66,20 @@ export default function Reports() {
   const COLORS = {
     primary: '#6366F1',
     secondary: '#10B981',
+    tertiary: '#F59E0B',
+    danger: '#EF4444',
     background: theme.BACKGROUND || '#F8FAFC',
     card: theme.CARD_BG || '#FFFFFF',
     textDark: theme.PRIMARY_TEXT || '#0F172A',
-    textMedium: theme.SECONDARY_TEXT || '#334155',
+    textMedium: theme.SECONDARY_TEXT || '#475569',
     textLight: theme.SECONDARY_TEXT || '#94A3B8',
-    border: theme.BORDER_COLOR || '#E2E8F0',
-    accentLine: theme.ACCENT_RED || '#818CF8',
-    chartGradientFrom: isDarkMode ? '#4338CA' : '#6366F1',
-    chartGradientTo: isDarkMode ? '#6366F1' : '#818CF8',
+    border: theme.BORDER_COLOR || '#F1F5F9',
+    accentLine: '#6366F1',
+    glassBg: isDarkMode ? 'rgba(30, 41, 59, 0.7)' : 'rgba(255, 255, 255, 0.8)',
+    glassBorder: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)',
     shadow: theme.SHADOW_COLOR || '#000',
-    segmentBg: isDarkMode ? '#334155' : '#E2E8F0',
     gmail: '#EA4335',
     whatsapp: '#25D366',
-    iconHover: isDarkMode ? '#4B5563' : '#F3F4F6',
   };
 
   const [viewType, setViewType] = useState('graph');
@@ -90,6 +92,7 @@ export default function Reports() {
   const [originalData, setOriginalData] = useState([]);
   const [error, setError] = useState(null);
   const [hoveredIcon, setHoveredIcon] = useState(null);
+  const [isExportModalVisible, setIsExportModalVisible] = useState(false);
 
   /* ----------------------- OPEN GMAIL COMPOSE ----------------------- */
   const openGmailCompose = (email) => {
@@ -350,137 +353,113 @@ export default function Reports() {
   };
 
   /* ----------------------- CSV DOWNLOAD (Save to Device Storage) ----------------------- */
-  const downloadCSV = async () => {
+
+  /* ----------------------- CSV DOWNLOAD (Save to Device Storage) ----------------------- */
+  /* ----------------------- CSV EXPORT HELPERS ----------------------- */
+  const generateCSVContent = () => {
+    let csvContent = 'ID,Ledger Name,Closing Amount (₹),Date,Mobile No,Email\n';
+    filteredData.forEach(item => {
+      const escapedName = item.ledgerName ? `"${item.ledgerName.replace(/"/g, '""')}"` : '""';
+      csvContent += `${item.id},${escapedName},${item.closingAmount},${item.date},${item.mobileNo || 'N/A'},${item.email || 'N/A'}\n`;
+    });
+    return csvContent;
+  };
+
+  const handleShare = async (fileUri) => {
+    const isAvailable = await Sharing.isAvailableAsync();
+    if (isAvailable) {
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'text/csv',
+        dialogTitle: 'Share Ledger Report',
+        UTI: 'public.comma-separated-values-text'
+      });
+    } else {
+      Alert.alert('Error', 'Sharing is not available on this device');
+    }
+  };
+
+  const handleSaveToDevice = async (fileUri, fileName, csvContent) => {
+    try {
+      if (Platform.OS === 'android') {
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+
+        if (permissions.granted) {
+          try {
+            const base64Content = await FileSystem.readAsStringAsync(fileUri, { encoding: FileSystem.EncodingType.Base64 });
+            const uri = await FileSystem.StorageAccessFramework.createFileAsync(permissions.directoryUri, fileName, 'text/csv');
+            await FileSystem.writeAsStringAsync(uri, base64Content, { encoding: FileSystem.EncodingType.Base64 });
+            Alert.alert('✅ Success', 'File saved successfully to your device');
+          } catch (writeError) {
+            console.error('SAF Write Error:', writeError);
+            if (writeError.message && writeError.message.includes('isn\'t writable')) {
+              Alert.alert(
+                'Folder Restricted',
+                'The folder you selected is read-only or restricted. Please try selecting a different folder (like a subfolder in Internal Storage) or use the Share option.',
+                [
+                  { text: 'Try Again', onPress: () => handleSaveToDevice(fileUri, fileName, csvContent) },
+                  { text: 'Use Share Instead', onPress: () => handleShare(fileUri) },
+                  { text: 'Cancel', style: 'cancel' }
+                ]
+              );
+            } else {
+              throw writeError;
+            }
+          }
+        } else {
+          Alert.alert('Permission Denied', 'Storage permission is required to save the file');
+        }
+      } else {
+        // iOS: Standard way to "Save to Files"
+        await handleShare(fileUri);
+      }
+    } catch (error) {
+      console.error('Save to device error:', error);
+      Alert.alert('❌ Save Failed', `Could not save file: ${error.message || 'Please try again.'}`);
+    }
+  };
+
+  const downloadCSV = () => {
     if (filteredData.length === 0) {
       Alert.alert('No Data', 'There is no data to export.');
       return;
     }
+    setIsExportModalVisible(true);
+  };
 
+  const proceedWithExport = async (type) => {
+    setIsExportModalVisible(false);
     setIsExporting(true);
 
     try {
-      // Create CSV content
-      let csvContent = 'ID,Ledger Name,Closing Amount (₹),Date,Mobile No,Email\n';
-
-      filteredData.forEach(item => {
-        const escapedName = item.ledgerName ? `"${item.ledgerName.replace(/"/g, '""')}"` : '""';
-        csvContent += `${item.id},${escapedName},${item.closingAmount},${item.date},${item.mobileNo || 'N/A'},${item.email || 'N/A'}\n`;
-      });
-
-      // Create file name
+      const csvContent = generateCSVContent();
       const timestamp = new Date().toISOString().split('T')[0];
       const fileName = `Ledger_Report_${timestamp}.csv`;
 
       if (Platform.OS === 'web') {
-        // Web download
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
         link.download = fileName;
         link.click();
         Alert.alert('Success', 'CSV file downloaded!');
-      } else if (Platform.OS === 'android') {
-        // For Android - Use Storage Access Framework (SAF)
-
-        try {
-          // Check if SAF is available (Android 5.0+)
-          const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-
-          if (permissions.granted) {
-            // Get the directory URI chosen by the user
-            const directoryUri = permissions.directoryUri;
-
-            // Create file in the chosen directory (this handles unique filenames automatically)
-            const newFileUri = await FileSystem.StorageAccessFramework.createFileAsync(
-              directoryUri,
-              fileName,
-              'text/csv'
-            );
-
-            // Write data to the new file
-            await FileSystem.writeAsStringAsync(newFileUri, csvContent, {
-              encoding: 'utf8'
-            });
-
-            Alert.alert(
-              '✅ File Saved',
-              `CSV file saved successfully!`,
-              [
-                { text: 'OK' }
-              ]
-            );
-          } else {
-            // Permission denied or cancelled
-            setIsExporting(false);
-            return;
-          }
-
-        } catch (safError) {
-          console.error('SAF Error:', safError);
-          // Fallback: Share the file if SAF fails
-
-          // Create temporary file
-          const tempFileUri = `${FileSystem.documentDirectory}${fileName}`;
-          await FileSystem.writeAsStringAsync(tempFileUri, csvContent, {
-            encoding: 'utf8'
-          });
-
-          if (await Sharing.isAvailableAsync()) {
-            await Sharing.shareAsync(tempFileUri, {
-              mimeType: 'text/csv',
-              dialogTitle: 'Share CSV File'
-            });
-          } else {
-            Alert.alert('Error', 'Could not save or share file.');
-          }
-        }
       } else {
-        // For iOS - Save to Files app
         const fileUri = `${FileSystem.documentDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, csvContent, { encoding: 'utf8' });
 
-        await FileSystem.writeAsStringAsync(fileUri, csvContent, {
-          encoding: 'utf8'
-        });
-
-        // For iOS, we use share dialog with "Save to Files" option
-        Alert.alert(
-          '✅ Report Ready',
-          `Your CSV file is ready. Please use "Save to Files" option to save it to your device.`,
-          [
-            {
-              text: 'Save to Device',
-              onPress: async () => {
-                try {
-                  await Sharing.shareAsync(fileUri, {
-                    mimeType: 'text/csv',
-                    dialogTitle: 'Save to Files',
-                    UTI: 'public.comma-separated-values-text'
-                  });
-                } catch (shareError) {
-                  console.log('Share error:', shareError);
-                  Alert.alert(
-                    'File Saved',
-                    `File saved to app storage:\n${fileName}`,
-                    [{ text: 'OK' }]
-                  );
-                }
-              }
-            },
-            {
-              text: 'Cancel',
-              style: 'cancel'
-            }
-          ]
-        );
+        if (type === 'share') {
+          await handleShare(fileUri);
+        } else {
+          await handleSaveToDevice(fileUri, fileName, csvContent);
+        }
       }
-
     } catch (error) {
-      console.error('Download error:', error);
-      Alert.alert('❌ Export Failed', `Could not save file: ${error.message || 'Please try again.'}`);
+      console.error('Export error:', error);
+      Alert.alert('❌ Export Failed', `Could not process file: ${error.message || 'Please try again.'}`);
     } finally {
       setIsExporting(false);
     }
   };
+
 
   const totalAmount = filteredData.reduce((acc, curr) => acc + Number(curr.closingAmount || 0), 0);
   const maxAmount = filteredData.length > 0
@@ -503,14 +482,14 @@ export default function Reports() {
     decimalPlaces: 0,
     color: (opacity = 1) => `rgba(99, 102, 241, ${opacity})`,
     labelColor: (opacity = 1) => COLORS.textMedium,
-    barPercentage: 0.65,
+    barPercentage: 0.6,
     fillShadowGradient: COLORS.primary,
     fillShadowGradientOpacity: 1,
-    fillShadowGradientFrom: COLORS.chartGradientFrom,
-    fillShadowGradientTo: COLORS.chartGradientTo,
+    fillShadowGradientFrom: COLORS.primary,
+    fillShadowGradientTo: COLORS.primary,
     propsForBackgroundLines: {
       strokeWidth: 1,
-      stroke: isDarkMode ? '#334155' : '#F1F5F9',
+      stroke: COLORS.border,
       strokeDasharray: '0',
     },
     propsForLabels: {
@@ -522,89 +501,55 @@ export default function Reports() {
   /* ----------------------- RENDER ROW ----------------------- */
   const LedgerRow = ({ item, index }) => (
     <View style={styles.rowWrapper}>
-      <View style={[styles.rowCard, { backgroundColor: COLORS.card, borderColor: COLORS.border }]}>
-        {/* Left Accent Bar */}
-        <View style={[styles.accentBar, { backgroundColor: COLORS.accentLine }]} />
-
-        {/* Index */}
-        <View style={styles.indexContainer}>
-          <Text style={[styles.indexText, { color: COLORS.textLight }]}>{index + 1}</Text>
+      <TouchableOpacity
+        style={[styles.rowCard, { backgroundColor: COLORS.card, borderColor: COLORS.border }]}
+        activeOpacity={0.7}
+      >
+        {/* Name & ID Group */}
+        <View style={styles.nameContainer}>
+          <View style={styles.idBadge}>
+            <Text style={[styles.idText, { color: COLORS.textLight }]}>{String(index + 1).padStart(2, '0')}</Text>
+          </View>
+          <View style={styles.textGroup}>
+            <Text style={[styles.rowNameText, { color: COLORS.textDark }]} numberOfLines={1}>
+              {item.ledgerName || 'Unnamed Ledger'}
+            </Text>
+            <View style={styles.subInfoRow}>
+              {item.mobileNo && (
+                <View style={styles.infoTag}>
+                  <Ionicons name="call-outline" size={10} color={COLORS.textLight} />
+                  <Text style={[styles.infoTagText, { color: COLORS.textLight }]}>{item.mobileNo}</Text>
+                </View>
+              )}
+            </View>
+          </View>
         </View>
 
-        {/* Name & Contact Info Group */}
-        <View style={styles.nameDateContainer}>
-          <Text style={[styles.rowNameText, { color: COLORS.textDark }]} numberOfLines={1}>
-            {item.ledgerName || 'Unnamed Ledger'}
-          </Text>
-          {item.mobileNo && (
-            <Text style={[styles.rowDateText, { color: COLORS.textLight }]}>{item.mobileNo}</Text>
-          )}
-          {item.email && (
-            <Text style={[styles.rowDateText, { color: COLORS.textLight, fontSize: 10 }]}>{item.email}</Text>
-          )}
-        </View>
-
-        {/* Amount */}
-        <View style={styles.amountContainer}>
-          <Text style={[styles.rowAmountText, { color: COLORS.secondary }]}>
+        {/* Amount & Actions Group */}
+        <View style={styles.rightContent}>
+          <Text style={[styles.rowAmountText, { color: COLORS.textDark }]}>
             ₹{Number(item.closingAmount || 0).toLocaleString()}
           </Text>
-        </View>
 
-        {/* NEW: Action Column with Icons */}
-        <View style={styles.actionContainer}>
-          {/* Gmail Icon */}
-          <TouchableOpacity
-            style={[
-              styles.iconButton,
-              { backgroundColor: hoveredIcon === `gmail-${item.id}` ? COLORS.iconHover : 'transparent' }
-            ]}
-            onPress={() => openGmailCompose(item.email)}
-            onPressIn={() => setHoveredIcon(`gmail-${item.id}`)}
-            onPressOut={() => setHoveredIcon(null)}
-            activeOpacity={0.7}
-          >
-            <MaterialIcons
-              name="email"
-              size={20}
-              color={item.email ? COLORS.gmail : COLORS.textLight}
-              style={!item.email && { opacity: 0.4 }}
-            />
-            {!item.email && (
-              <View style={styles.tooltipIndicator}>
-                <Ionicons name="information-circle-outline" size={10} color={COLORS.textLight} />
-              </View>
-            )}
-          </TouchableOpacity>
+          <View style={styles.rowActions}>
+            <TouchableOpacity
+              style={[styles.miniActionBtn, { backgroundColor: COLORS.gmail + '10' }]}
+              onPress={() => openGmailCompose(item.email)}
+              activeOpacity={0.6}
+            >
+              <MaterialIcons name="email" size={16} color={item.email ? COLORS.gmail : COLORS.textLight} />
+            </TouchableOpacity>
 
-          {/* WhatsApp Icon */}
-          <TouchableOpacity
-            style={[
-              styles.iconButton,
-              {
-                backgroundColor: hoveredIcon === `whatsapp-${item.id}` ? COLORS.iconHover : 'transparent',
-                marginLeft: 8
-              }
-            ]}
-            onPress={() => openWhatsApp(item.mobileNo)}
-            onPressIn={() => setHoveredIcon(`whatsapp-${item.id}`)}
-            onPressOut={() => setHoveredIcon(null)}
-            activeOpacity={0.7}
-          >
-            <FontAwesome5
-              name="whatsapp"
-              size={18}
-              color={item.mobileNo ? COLORS.whatsapp : COLORS.textLight}
-              style={!item.mobileNo && { opacity: 0.4 }}
-            />
-            {!item.mobileNo && (
-              <View style={styles.tooltipIndicator}>
-                <Ionicons name="information-circle-outline" size={10} color={COLORS.textLight} />
-              </View>
-            )}
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.miniActionBtn, { backgroundColor: COLORS.whatsapp + '10', marginLeft: 8 }]}
+              onPress={() => openWhatsApp(item.mobileNo)}
+              activeOpacity={0.6}
+            >
+              <FontAwesome5 name="whatsapp" size={14} color={item.mobileNo ? COLORS.whatsapp : COLORS.textLight} />
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
+      </TouchableOpacity>
     </View>
   );
 
@@ -612,9 +557,9 @@ export default function Reports() {
   const StatCard = ({ label, value, icon, color }) => (
     <View style={[styles.statCard, { backgroundColor: COLORS.card, borderColor: COLORS.border }]}>
       <View style={[styles.statIconBox, { backgroundColor: color + '15' }]}>
-        <Ionicons name={icon} size={18} color={color} />
+        <Ionicons name={icon} size={20} color={color} />
       </View>
-      <View>
+      <View style={styles.statInfo}>
         <Text style={[styles.statLabel, { color: COLORS.textLight }]}>{label}</Text>
         <Text style={[styles.statValue, { color: COLORS.textDark }]}>{value}</Text>
       </View>
@@ -635,58 +580,69 @@ export default function Reports() {
 
   /* ----------------------- MAIN UI ----------------------- */
   return (
-    <View style={[styles.container, { backgroundColor: theme.TAB_BAR_BG }]}>
+    <View style={[styles.container, { backgroundColor: COLORS.background }]}>
       <StatusBar
         barStyle={isDarkMode ? "light-content" : "dark-content"}
-        backgroundColor={COLORS.background}
+        backgroundColor="transparent"
+        translucent
       />
-      <View>
+      <View style={styles.navWrapper}>
         <InfiniteNavBar pageName="Reports" />
       </View>
 
-      {/* HEADER */}
-      <View style={[styles.headerSection, { backgroundColor: theme.TAB_BAR_BG }]}>
+      {/* HEADER SECTION */}
+      <View style={styles.headerContainer}>
         <View style={styles.headerTop}>
           <View>
-            <Text style={[styles.headerSubtitle, { color: COLORS.textLight }]}>Financial Dashboard</Text>
-            <Text style={[styles.headerTitle, { color: COLORS.textDark }]}>Ledger Outstanding</Text>
+            <Text style={[styles.headerSubtitle, { color: COLORS.primary }]}>FINANCIAL OVERVIEW</Text>
+            <Text style={[styles.headerTitle, { color: COLORS.textDark }]}>Ledger <Text style={{ fontWeight: '400' }}>Outstanding</Text></Text>
           </View>
           <TouchableOpacity
             style={[
               styles.exportBtn,
               {
-                backgroundColor: COLORS.card,
-                shadowColor: COLORS.shadow
+                backgroundColor: COLORS.primary,
+                shadowColor: COLORS.primary,
               },
               isExporting && styles.disabledBtn
             ]}
             onPress={downloadCSV}
             disabled={isExporting}
+            activeOpacity={0.8}
           >
-            <Ionicons name={isExporting ? "hourglass-outline" : "download-outline"} size={22} color={COLORS.primary} />
+            {isExporting ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <Ionicons name="download-outline" size={22} color="#FFF" />
+            )}
           </TouchableOpacity>
         </View>
 
-        {/* CONTROLS ROW */}
+        {/* CONTROLS & SEARCH BAR-LIKE ROW */}
         <View style={styles.controlsRow}>
-          <View style={[styles.segmentContainer, { backgroundColor: COLORS.segmentBg }]}>
+          <View style={[styles.searchSimulation, { backgroundColor: COLORS.card, borderColor: COLORS.border }]}>
+            <Ionicons name="search-outline" size={18} color={COLORS.textLight} />
+            <Text style={[styles.searchPlaceholder, { color: COLORS.textLight }]}>Search ledger records...</Text>
+          </View>
+
+          <View style={[styles.viewSwitcher, { backgroundColor: COLORS.card, borderColor: COLORS.border }]}>
             <TouchableOpacity
               style={[
-                styles.segmentBtn,
-                viewType === 'table' && [styles.segmentActive, { backgroundColor: COLORS.card, shadowColor: COLORS.shadow }]
+                styles.switcherBtn,
+                viewType === 'table' && { backgroundColor: COLORS.primary }
               ]}
               onPress={() => toggleView('table')}
             >
-              <Ionicons name="list" size={16} color={viewType === 'table' ? COLORS.primary : COLORS.textLight} />
+              <Ionicons name="list" size={18} color={viewType === 'table' ? '#FFF' : COLORS.textLight} />
             </TouchableOpacity>
             <TouchableOpacity
               style={[
-                styles.segmentBtn,
-                viewType === 'chart' && [styles.segmentActive, { backgroundColor: COLORS.card, shadowColor: COLORS.shadow }]
+                styles.switcherBtn,
+                viewType === 'chart' && { backgroundColor: COLORS.primary }
               ]}
               onPress={() => toggleView('chart')}
             >
-              <Ionicons name="stats-chart" size={16} color={viewType === 'chart' ? COLORS.primary : COLORS.textLight} />
+              <Ionicons name="stats-chart" size={18} color={viewType === 'chart' ? '#FFF' : COLORS.textLight} />
             </TouchableOpacity>
           </View>
         </View>
@@ -710,12 +666,10 @@ export default function Reports() {
 
         {viewType === 'table' && !error ? (
           <View style={styles.listContainer}>
-            {/* Table Header - UPDATED with Action column */}
-            <View style={[styles.tableHeaderRow, { borderBottomColor: COLORS.border }]}>
-              <Text style={[styles.th, { color: COLORS.textLight, width: 40, textAlign: 'center' }]}>#</Text>
-              <Text style={[styles.th, { color: COLORS.textLight, flex: 1, paddingLeft: 12 }]}>Ledger Details</Text>
-              <Text style={[styles.th, { color: COLORS.textLight, width: 100, textAlign: 'right', paddingRight: 4 }]}>Amount</Text>
-              <Text style={[styles.th, { color: COLORS.textLight, width: 80, textAlign: 'center' }]}>Action</Text>
+            {/* Premium Table Header */}
+            <View style={styles.tableHeaderRow}>
+              <Text style={[styles.th, { color: COLORS.textLight, flex: 1 }]}>LEDGER DETAILS</Text>
+              <Text style={[styles.th, { color: COLORS.textLight, width: 120, textAlign: 'right' }]}>DUE AMOUNT</Text>
             </View>
 
             <FlatList
@@ -826,16 +780,16 @@ export default function Reports() {
             {/* 3. Highest Value Insight */}
             {filteredData.length > 0 && (
               <View style={[styles.insightCard, {
-                backgroundColor: isDarkMode ? '#064E3B' : '#ECFDF5',
-                borderColor: isDarkMode ? '#065F46' : '#D1FAE5'
+                backgroundColor: COLORS.secondary + '10',
+                borderColor: COLORS.secondary + '30'
               }]}>
                 <View style={styles.insightHeader}>
-                  <Ionicons name="trending-up-outline" size={20} color={isDarkMode ? '#34D399' : '#10B981'} />
-                  <Text style={[styles.insightTitle, { color: isDarkMode ? '#D1FAE5' : '#065F46' }]}>Highest Outstanding</Text>
+                  <Ionicons name="trending-up-outline" size={20} color={COLORS.secondary} />
+                  <Text style={[styles.insightTitle, { color: COLORS.secondary }]}>Highest Outstanding</Text>
                 </View>
-                <Text style={[styles.insightValue, { color: isDarkMode ? '#FFFFFF' : '#064E3B' }]}>₹{maxAmount.toLocaleString()}</Text>
-                <Text style={[styles.insightDesc, { color: isDarkMode ? '#A7F3D0' : '#047857' }]}>
-                  Account with maximum dues currently.
+                <Text style={[styles.insightValue, { color: COLORS.textDark }]}>₹{maxAmount.toLocaleString()}</Text>
+                <Text style={[styles.insightDesc, { color: COLORS.textMedium }]}>
+                  This account holds the maximum current due amount in your ledger.
                 </Text>
               </View>
             )}
@@ -843,6 +797,58 @@ export default function Reports() {
           </ScrollView>
         ) : null}
       </View>
+
+      {/* EXPORT OPTIONS MODAL */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={isExportModalVisible}
+        onRequestClose={() => setIsExportModalVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setIsExportModalVisible(false)}
+        >
+          <View style={[styles.modalContent, { backgroundColor: COLORS.card }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: COLORS.textDark }]}>Export Options</Text>
+              <TouchableOpacity onPress={() => setIsExportModalVisible(false)}>
+                <Ionicons name="close" size={24} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalBody}>
+              <TouchableOpacity
+                style={[styles.modalOption, { borderColor: COLORS.border }]}
+                onPress={() => proceedWithExport('save')}
+              >
+                <View style={[styles.optionIcon, { backgroundColor: COLORS.primary + '15' }]}>
+                  <Ionicons name="save-outline" size={24} color={COLORS.primary} />
+                </View>
+                <View style={styles.optionTextContainer}>
+                  <Text style={[styles.optionTitle, { color: COLORS.textDark }]}>Save to Device</Text>
+                  <Text style={[styles.optionSubtitle, { color: COLORS.textLight }]}>Download file to local storage</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={COLORS.textLight} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalOption, { borderColor: COLORS.border }]}
+                onPress={() => proceedWithExport('share')}
+              >
+                <View style={[styles.optionIcon, { backgroundColor: COLORS.secondary + '15' }]}>
+                  <Ionicons name="share-social-outline" size={24} color={COLORS.secondary} />
+                </View>
+                <View style={styles.optionTextContainer}>
+                  <Text style={[styles.optionTitle, { color: COLORS.textDark }]}>Share</Text>
+                  <Text style={[styles.optionSubtitle, { color: COLORS.textLight }]}>Send file via other apps</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -851,303 +857,226 @@ export default function Reports() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    marginTop: 0
   },
-
-  /* LOADING & ERROR STATES */
+  navWrapper: {
+    zIndex: 10,
+    backgroundColor: '#FFF',
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
   loadingText: {
-    marginTop: 0,
-    fontSize: 16,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  errorText: {
-    fontSize: 18,
-    fontWeight: '600',
     marginTop: 16,
-  },
-  errorSubtext: {
     fontSize: 14,
-    textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 20,
-  },
-  retryButton: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  retryButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '500',
   },
 
-  /* HEADER AREA */
-  headerSection: {
-    paddingHorizontal: 24,
-    paddingTop: 10,
+  /* HEADER SECTION */
+  headerContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 24,
     paddingBottom: 20,
   },
   headerTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
   },
   headerSubtitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.5,
     marginBottom: 4,
   },
   headerTitle: {
-    fontSize: 28,
-    fontWeight: '800',
+    fontSize: 26,
+    fontWeight: '700',
     letterSpacing: -0.5,
   },
   exportBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 16,
+    width: 46,
+    height: 46,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 5,
   },
   disabledBtn: {
-    opacity: 0.5,
-  },
-  controlsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  dateControlGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 4,
-    borderRadius: 14,
-    gap: 8,
-    borderWidth: 1,
-  },
-  dateBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  dateBtnLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  dateBtnValue: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  applyBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 4,
-  },
-  segmentContainer: {
-    flexDirection: 'row',
-    borderRadius: 12,
-    padding: 3,
-  },
-  segmentBtn: {
-    width: 36,
-    height: 36,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 10,
-  },
-  segmentActive: {
-    elevation: 2,
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    shadowOffset: { width: 0, height: 2 }
+    opacity: 0.6,
   },
 
-  /* CONTENT AREA */
+  /* CONTROLS & SEARCH */
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  searchSimulation: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 10,
+  },
+  searchPlaceholder: {
+    fontSize: 14,
+  },
+  viewSwitcher: {
+    flexDirection: 'row',
+    padding: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  switcherBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  /* LIST VIEW */
   contentContainer: {
     flex: 1,
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
   },
   listContainer: {
     flex: 1,
   },
   tableHeaderRow: {
     flexDirection: 'row',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    justifyContent: 'space-between',
+    paddingBottom: 12,
     marginBottom: 8,
     borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
   },
   th: {
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
 
-  /* ROW STYLE - UPDATED for Action column */
+  /* ROW DESIGN */
   rowWrapper: {
     marginBottom: 12,
   },
   rowCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingRight: 16,
+    justifyContent: 'space-between',
+    padding: 16,
+    borderRadius: 18,
     borderWidth: 1,
   },
-  accentBar: {
-    width: 4,
-    height: 24,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
+  nameContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
     marginRight: 12,
   },
-  indexContainer: {
-    width: 30,
-    alignItems: 'center',
-  },
-  indexText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  nameDateContainer: {
-    flex: 1,
+  idBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  idText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  textGroup: {
+    flex: 1,
   },
   rowNameText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
     marginBottom: 4,
   },
-  rowDateText: {
-    fontSize: 11,
-  },
-  amountContainer: {
-    alignItems: 'flex-end',
-    width: 100,
-    paddingRight: 8,
-  },
-  rowAmountText: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  /* NEW: Action Column Styles */
-  actionContainer: {
+  subInfoRow: {
     flexDirection: 'row',
-    width: 80,
-    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 4,
   },
-  iconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  tooltipIndicator: {
-    position: 'absolute',
-    top: 2,
-    right: 2,
-  },
-
-  /* FOOTER */
-  floatingFooter: {
-    position: 'absolute',
-    bottom: 20,
-    left: 0,
-    right: 0,
-    borderRadius: 20,
+  infoTag: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.25,
-    shadowRadius: 16,
-    elevation: 10,
+    gap: 4,
   },
-  footerInfo: {
-    flexDirection: 'column',
-  },
-  footerLabel: {
-    color: '#94A3B8',
+  infoTagText: {
     fontSize: 11,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  footerCount: {
-    color: '#FFFFFF',
-    fontSize: 12,
     fontWeight: '500',
   },
-  footerValue: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
+  rightContent: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  rowAmountText: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  rowActions: {
+    flexDirection: 'row',
+  },
+  miniActionBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
-  /* CHART STYLES */
+  /* STAT CARS */
   statCard: {
-    padding: 12,
-    borderRadius: 16,
+    padding: 14,
+    borderRadius: 20,
     marginRight: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    minWidth: 140,
+    minWidth: 160,
     borderWidth: 1,
   },
   statIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  statInfo: {
+    gap: 2,
+  },
   statLabel: {
     fontSize: 10,
-    fontWeight: '600',
+    fontWeight: '700',
     textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   statValue: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 
+  /* CHART SECTION */
   chartContainer: {
     borderRadius: 24,
-    padding: 20,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
-    marginBottom: 20,
+    padding: 24,
+    marginVertical: 10,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
   },
   chartHeader: {
     flexDirection: 'row',
@@ -1160,8 +1089,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   chartSubtitle: {
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: 12,
   },
   iconBox: {
     width: 36,
@@ -1173,14 +1101,14 @@ const styles = StyleSheet.create({
   chartStyle: {
     borderRadius: 16,
     paddingRight: 40,
-    marginVertical: 8,
   },
 
   /* INSIGHT CARD */
   insightCard: {
-    borderRadius: 20,
+    borderRadius: 22,
     padding: 20,
     borderWidth: 1,
+    marginTop: 10,
   },
   insightHeader: {
     flexDirection: 'row',
@@ -1190,23 +1118,109 @@ const styles = StyleSheet.create({
   },
   insightTitle: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   insightValue: {
-    fontSize: 24,
+    fontSize: 26,
     fontWeight: '800',
     marginBottom: 4,
   },
   insightDesc: {
     fontSize: 13,
+    lineHeight: 18,
   },
 
-  /* EMPTY STATES */
+  /* FOOTER */
+  floatingFooter: {
+    position: 'absolute',
+    bottom: 24,
+    left: 20,
+    right: 20,
+    borderRadius: 22,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    backgroundColor: '#0F172A',
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  footerInfo: {
+    gap: 2,
+  },
+  footerLabel: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  footerCount: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  footerValue: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+
+  /* MODAL */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 28,
+    padding: 28,
+    elevation: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 15 },
+    shadowOpacity: 0.3,
+    shadowRadius: 25,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  modalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 16,
+  },
+  optionIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  optionTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  optionSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  /* EMPTY STATE */
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 40,
-    marginTop: 40,
+    paddingVertical: 60,
   },
   emptyText: {
     marginTop: 16,
